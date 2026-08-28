@@ -282,21 +282,6 @@ function hasAssistantStreamReplacement(
   });
 }
 
-export function assistantMessageReplacesCurrentStream(
-  state: StreamReconciliationState,
-  message: unknown,
-): boolean {
-  const currentPart = visibleAssistantStreamParts(state, {
-    includeCurrent: true,
-    isHiddenStreamText: () => false,
-  }).findLast((part) => part.source === "current");
-  return Boolean(
-    currentPart &&
-    (hasAssistantStreamReplacement([message], currentPart.replacementText, () => false, 0) ||
-      hasAssistantStreamReplacement([message], currentPart.text, () => false, 0)),
-  );
-}
-
 function streamFallbackItemId(message: unknown): string | null {
   if (!message || typeof message !== "object") {
     return null;
