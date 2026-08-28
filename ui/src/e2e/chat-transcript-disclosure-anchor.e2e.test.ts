@@ -219,6 +219,21 @@ suite.define(() => {
             ok: true,
             message: { role: "assistant", content: fullText },
           });
+          if (interruption === "pointer") {
+            // The recovered row parked fully above the viewport leaves the
+            // virtual range (the leave-and-return cycle below asserts count 0),
+            // and off-range rows keep their estimated geometry until remount.
+            // Recovery must not hijack the pointer-interrupted reader; the
+            // remount below then proves the recovered text and size applied.
+            await waitForChatScrollIdle(page);
+            const settledAnchor = await captureTopVisibleVirtualRow(thread);
+            expect(settledAnchor.key).toBe(interruptedAnchor.key);
+            expect(
+              Math.abs(settledAnchor.viewportTop - interruptedAnchor.viewportTop),
+            ).toBeLessThanOrEqual(1);
+            await thread.hover();
+            await page.mouse.wheel(0, -100_000);
+          }
           await bubble.getByText("Recovered paragraph 1.", { exact: false }).waitFor();
           await waitForChatScrollIdle(page);
           // Outlast virtual-core's five-second scroll reconciliation deadline:
@@ -252,14 +267,6 @@ suite.define(() => {
               2,
             ),
           );
-          if (interruption === "pointer") {
-            // Growth above the reader legitimately adjusts scrollTop; the visible
-            // row must stay anchored regardless of where the pointer stopped scrolling.
-            expect(finalAnchor.key).toBe(interruptedAnchor.key);
-            expect(
-              Math.abs(finalAnchor.viewportTop - interruptedAnchor.viewportTop),
-            ).toBeLessThanOrEqual(1);
-          }
           expect(final.key).toBe(initial.key);
           expect(final.height).toBeGreaterThan(initial.height);
           expect(
