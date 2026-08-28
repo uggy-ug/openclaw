@@ -4,12 +4,14 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage } from "node:http";
 import net from "node:net";
 import path from "node:path";
+import { withTimeout } from "@openclaw/fs-safe/advanced";
 import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
 import { ConnectErrorDetailCodes } from "../../../packages/gateway-protocol/src/connect-error-details.js";
 import type { GatewayServer } from "../../../src/gateway/server.js";
+import { redactSensitiveText } from "../../../src/logging/redact.js";
 import { getActiveGatewayRootWorkCount } from "../../../src/process/gateway-work-admission.js";
 import {
   createOpenClawTestState,
@@ -71,6 +73,7 @@ type ProxyConnectionEvidence = {
   gatewayResult?: GatewayResultEvidence;
   identityInjected: boolean;
   requestMethods: string[];
+  configRpcOutcomes: Array<{ method: string; ok: boolean | null }>;
   requiredHeaderInjected: boolean;
   route: ProxyRoute;
   upstreamHandshakeStatus?: number;
@@ -201,6 +204,7 @@ function startProxyConnection(
   activeSockets.add(upstream);
   const pendingBrowserFrames: Array<{ data: RawData; isBinary: boolean }> = [];
   let connectRequestId: string | null = null;
+  const diagnosticRequests = new Map<string, { method: string; ok: boolean | null }>();
 
   browserSocket.on("message", (data, isBinary) => {
     const frame = parseJsonFrame(data);
@@ -209,6 +213,17 @@ function startProxyConnection(
       const method = frame.type === "req" ? stringValue(frame.method) : null;
       if (method && method !== "connect") {
         evidence.requestMethods.push(method);
+      }
+      const id = stringValue(frame.id);
+      if (
+        id &&
+        method &&
+        ["config.get", "config.schema", "config.set", "models.authStatus"].includes(method) &&
+        evidence.configRpcOutcomes.length < 32
+      ) {
+        const outcome: { method: string; ok: boolean | null } = { method, ok: null };
+        evidence.configRpcOutcomes.push(outcome);
+        diagnosticRequests.set(id, outcome);
       }
     }
     if (upstream.readyState === WebSocket.OPEN) {
@@ -226,6 +241,12 @@ function startProxyConnection(
     const frame = parseJsonFrame(data);
     if (frame) {
       captureGatewayResult(evidence, frame, connectRequestId);
+      const id = frame.type === "res" ? stringValue(frame.id) : null;
+      const outcome = id ? diagnosticRequests.get(id) : undefined;
+      if (id && outcome) {
+        outcome.ok = frame.ok === true;
+        diagnosticRequests.delete(id);
+      }
     }
     if (browserSocket.readyState === WebSocket.OPEN) {
       browserSocket.send(data, { binary: isBinary });
@@ -292,6 +313,7 @@ async function startRealTransportProxy(gatewayUrl: string): Promise<RealTranspor
         browserOrigin: stringValue(request.headers.origin),
         identityInjected: route === "trusted",
         requestMethods: [],
+        configRpcOutcomes: [],
         requiredHeaderInjected: route === "trusted",
         route,
       };
@@ -551,6 +573,72 @@ async function captureChromiumScreenshot(page: Page, fileName: string): Promise<
   }
 }
 
+async function captureRawNavigationFailure(connected: {
+  page: Page;
+  errors: string[];
+  evidenceStartIndex: number;
+}): Promise<void> {
+  // The shared mock-Gateway dump includes hello/config payloads. This real-auth
+  // probe retains only structure and method outcomes, never credentials or config.
+  const structure = await connected.page
+    .evaluate(() => {
+      const configPage = document.querySelector("openclaw-config-page") as
+        | (HTMLElement & { pageId?: string })
+        | null;
+      return {
+        advancedPath: location.pathname === "/settings/advanced",
+        communicationsPath: location.pathname === "/settings/communications",
+        envSection: new URLSearchParams(location.search).get("section") === "env",
+        readyState: document.readyState,
+        shellPresent: Boolean(document.querySelector("openclaw-app-shell")),
+        loginGatePresent: Boolean(document.querySelector(".login-gate")),
+        configPagePresent: Boolean(configPage),
+        advancedPage: configPage?.pageId === "advanced",
+        rawEditorPresent: Boolean(document.querySelector(".config-raw-field textarea")),
+        modeButtons: Array.from(
+          document.querySelectorAll<HTMLButtonElement>(".config-mode-toggle__btn"),
+        )
+          .slice(0, 4)
+          .map((button) => ({
+            rawLabel: button.textContent?.trim() === "Raw",
+            formLabel: button.textContent?.trim() === "Form",
+            disabled: button.disabled,
+            hasLayout: button.getClientRects().length > 0,
+          })),
+      };
+    })
+    .catch(() => null);
+  const report = {
+    structure,
+    pageErrors: connected.errors
+      .slice(-20)
+      .map((error) => redactSensitiveText(error, { mode: "tools" }).slice(0, 2048)),
+    connections: proxy.evidence
+      .slice(connected.evidenceStartIndex)
+      .slice(-8)
+      .map((entry) => ({
+        connected: entry.gatewayResult?.ok ?? null,
+        configRpcOutcomes: entry.configRpcOutcomes,
+      })),
+  };
+  // CI retains logs even when optional screenshot/video capture is disabled.
+  console.warn(`[real-config-id-proof] Raw navigation failure: ${JSON.stringify(report)}`);
+  if (!captureUiProofEnabled) {
+    return;
+  }
+  const captures = await Promise.allSettled([
+    writeFile(
+      path.join(artifactDir, "raw-navigation-failure.json"),
+      `${JSON.stringify(report, null, 2)}\n`,
+      "utf8",
+    ),
+    captureChromiumScreenshot(connected.page, "raw-navigation-failure.png"),
+  ]);
+  if (captures.some((result) => result.status === "rejected")) {
+    console.warn("[real-config-id-proof] Raw navigation failure capture incomplete");
+  }
+}
+
 async function verifyGatewayServedControlUiBundle(httpUrl: string): Promise<{
   assetPath: string;
   assetSha256: string;
@@ -734,7 +822,15 @@ describeControlUiE2e("Control UI real auth transports E2E", () => {
       .locator("openclaw-app-shell")
       .waitFor({ timeout: controlUiSettleTimeoutMs });
     expect((await connected.page.goto(rawSettingsUrl.toString()))?.status()).toBe(200);
-    await connected.page.getByRole("button", { name: "Raw", exact: true }).click();
+    try {
+      await connected.page.getByRole("button", { name: "Raw", exact: true }).click();
+    } catch (error) {
+      // A stalled renderer must not replace the original click failure with a capture hang.
+      await withTimeout(captureRawNavigationFailure(connected), 5_000, "Raw failure capture").catch(
+        () => console.warn("[real-config-id-proof] Raw navigation failure capture incomplete"),
+      );
+      throw error;
+    }
     const rawEditor = connected.page.locator(".config-raw-field textarea");
     await rawEditor.waitFor();
     await expect.poll(() => rawEditor.inputValue()).toContain(`"${configProofIdentifier}"`);

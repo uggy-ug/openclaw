@@ -64,6 +64,7 @@ const repositoryScriptEntries = [
   "scripts/e2e/lib/run-with-pty.mjs!",
   "scripts/e2e/lib/sandbox-browser-sidecar/scenario.mjs!",
   "scripts/e2e/lib/upgrade-survivor/config-parking.mjs!",
+  "scripts/e2e/lib/upgrade-survivor/diagnostics.mjs!",
   "scripts/e2e/lib/upgrade-survivor/probe-gateway.mjs!",
   "scripts/embedded-run-abort-leak.ts!",
   "scripts/fixtures/packed-plugin-sdk-type-smoke.ts!",
@@ -99,6 +100,7 @@ const repositoryScriptEntries = [
   // Native shell UI tests connect to this manually launched loopback Gateway fixture.
   "scripts/test-ios-shell-gateway.mjs!",
   "scripts/update-clawtributors.ts!",
+  "scripts/upgrade-survivor-diagnostics.mjs!",
   "scripts/verify-stable-main-closeout.mjs!",
   "scripts/write-package-dist-inventory.ts!",
   "scripts/write-plugin-sdk-entry-dts.ts!",
