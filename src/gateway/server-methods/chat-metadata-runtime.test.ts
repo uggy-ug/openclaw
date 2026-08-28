@@ -131,7 +131,14 @@ function createHarness(
       getSkillsVersion,
       getPluginRegistryVersion,
       buildCommands,
-      ...(useDefaultProjection ? {} : { buildProjection: buildProjection as never }),
+      ...(useDefaultProjection
+        ? {}
+        : {
+            buildProjection: async (params) => {
+              const projection = await buildProjection(params);
+              return { read: () => projection, isCurrent: () => true };
+            },
+          }),
     },
   });
   return {
@@ -201,7 +208,7 @@ describe("gateway chat metadata runtime", () => {
     releaseModels.resolve();
     await Promise.all([firstRefresh, secondRefresh]);
     const [first, second] = await Promise.all([firstRead, secondRead]);
-    expect(first).toBe(second);
+    expect(first).toEqual(second);
     expect(harness.buildCommands).toHaveBeenCalledTimes(1);
     expect(harness.buildProjection).toHaveBeenCalledTimes(1);
   });
@@ -218,7 +225,7 @@ describe("gateway chat metadata runtime", () => {
     const first = await harness.runtime.read({ agentId: "main" });
     const second = await harness.runtime.read({ agentId: "main" });
 
-    expect(first).toBe(second);
+    expect(first).toEqual(second);
     expect(harness.getPreparedOwner).not.toHaveBeenCalled();
     expect(harness.getPreparedAuthStore).not.toHaveBeenCalled();
     expect(harness.getAuthStoreRevision).not.toHaveBeenCalled();
@@ -365,7 +372,7 @@ describe("gateway chat metadata runtime", () => {
     await harness.runtime.refresh();
     const second = await harness.runtime.read({ agentId: "main" });
 
-    expect(second).toBe(first);
+    expect(second).toEqual(first);
     expect(harness.buildCommands).toHaveBeenCalledTimes(1);
     expect(harness.buildProjection).toHaveBeenCalledTimes(1);
   });
@@ -586,7 +593,7 @@ describe("gateway chat metadata runtime", () => {
     await harness.runtime.refresh();
     const second = await harness.runtime.read({ agentId: "main" });
 
-    expect(second).toBe(first);
+    expect(second).toEqual(first);
     expect(harness.buildProjection).toHaveBeenCalledTimes(1);
     expect(harness.getAuthStoreRevision).toHaveBeenCalledWith("/tmp/first/agent");
     expect(harness.getAuthStoreRevision).toHaveBeenCalledWith(undefined);
